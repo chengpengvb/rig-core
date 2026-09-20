@@ -1,134 +1,98 @@
-# Rig
-Rig is a Rust library for building LLM-powered applications that focuses on ergonomics and modularity.
+# Termini fork of crates.io `rig-core` 0.42.0
 
-More information about this crate can be found in the [crate documentation](https://docs.rs/rig-core/latest/rig_core/).
-## Table of contents
+只记跟官方 **0.42.0** 源码的差异。基底是 crates.io `.crate`，不是 git 快照。
 
-- [Rig](#rig)
-  - [Table of contents](#table-of-contents)
-  - [Features](#features)
-  - [Installation](#installation)
-  - [WASM target support](#wasm-target-support)
-  - [Simple example:](#simple-example)
-  - [Integrations](#integrations)
-  - [Who is using Rig?](#who-is-using-rig)
+GitHub：<https://github.com/chengpengvb/rig-core>  
+`main` 是这份 0.42；`v0.40.0` 是上一份 0.40 存根。
 
-## Features
-- Portable contracts for agent runtimes, including completions, messages, tools, and memory
-- Full [GenAI Semantic Convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/) compatibility
-- 20+ model providers, all under one singular unified interface
-- 10+ vector store integrations, all under one singular unified interface
-- Full support for LLM completion and embedding workflows
-- Support for transcription, audio generation and image generation model capabilities
-- Integrate LLMs in your app with minimal boilerplate
-- Full WASM compatibility (core library only)
-
-## Installation
-```bash
-cargo add rig-core
-```
-
-## WASM target support
-
-`rig-core` supports the browser-oriented `wasm32-unknown-unknown` target. When
-the `pdf` feature is enabled, the host must provide the Web Crypto API's
-`Crypto.getRandomValues` implementation, as modern browsers, Web Workers, and
-Node.js 19 or later do. WASI targets are not supported.
-
-## Simple example
-```rust
-use rig_core::{
-    client::{CompletionClient, ProviderClient},
-    completion::{AssistantContent, CompletionModel},
-    providers::openai,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create an OpenAI client and completion model.
-    // This requires the `OPENAI_API_KEY` environment variable to be set.
-    let openai_client = openai::Client::from_env()?;
-
-    let model = openai_client.completion_model(openai::GPT_5_2);
-    let request = model.completion_request("Who are you?").build();
-    let response = model.completion(request).await?;
-    for item in response.choice {
-        if let AssistantContent::Text(text) = item {
-            println!("{}", text.text);
-        }
-    }
-
-    Ok(())
-}
-```
-Note using `#[tokio::main]` requires you enable tokio's `macros` and `rt-multi-thread` features
-or just `full` to enable all features (`cargo add tokio --features macros,rt-multi-thread`).
-
-You can find more examples in the repository-level `examples/` directory. Many provider-specific examples now also live as ignored live integration tests under the repository-level `tests/providers` directory, organized by provider. When running those provider-backed tests, prefer provider-specific targets such as `cargo test -p rig --test openai -- --ignored --test-threads=1` to avoid rate-limiting. More detailed walkthroughs are regularly published on our Dev.to blog and added to Rig's official documentation at `docs.rig.rs`.
-
-## Integrations
-Rig supports the following LLM providers out of the box:
-
-- Anthropic
-- Azure OpenAI
-- ChatGPT and GitHub Copilot auth-backed clients
-- Cohere
-- DeepSeek
-- Gemini
-- Groq
-- Hugging Face
-- Hyperbolic
-- Llamafile
-- MiniMax
-- Mira
-- Mistral
-- Moonshot
-- Ollama
-- OpenAI
-- OpenRouter
-- Perplexity
-- Together
-- Venice
-- Voyage AI
-- xAI
-- Xiaomi MiMo
-- Z.ai
-
-Vector stores are available as separate companion-crates and as feature-gated modules on the root `rig` facade:
+Termini 挂载：
 
 ```toml
-rig = { version = "0.36.0", features = ["lancedb", "fastembed"] }
+[patch.crates-io]
+rig-core = { path = "../../archive/rig" }
 ```
 
-- MongoDB: [`rig-mongodb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-mongodb)
-- LanceDB: [`rig-lancedb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-lancedb)
-- Neo4j: [`rig-neo4j`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-neo4j)
-- Qdrant: [`rig-qdrant`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-qdrant)
-- SQLite: [`rig-sqlite`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-sqlite)
-- SurrealDB: [`rig-surrealdb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-surrealdb)
-- Milvus: [`rig-milvus`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-milvus)
-- ScyllaDB: [`rig-scylladb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-scylladb)
-- AWS S3Vectors: [`rig-s3vectors`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-s3vectors)
-- HelixDB: [`rig-helixdb`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-helixdb)
-- Cloudflare Vectorize: [`rig-vectorize`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-vectorize)
+`rig` 门面只做 re-export，不 patch。`rig-agent` 现走 crates.io。诊断 tool call 那一刀在 **rig-agent** 的 `src/agent/run/streamed.rs`，本仓库没有。
 
-The following providers are available as separate companion-crates:
+---
 
-- AWS Bedrock: [`rig-bedrock`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-bedrock)
-- Fastembed: [`rig-fastembed`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-fastembed)
-- Google Gemini gRPC: [`rig-gemini-grpc`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-gemini-grpc)
-- Google Vertex: [`rig-vertexai`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-vertexai)
+## 1. `stringified_json::serialize`：`Null` → `"{}"`
 
-## Who is using Rig?
-Below is a non-exhaustive list of companies and people who are using Rig:
-- [St Jude](https://www.stjude.org/) - Using Rig for a chatbot utility as part of [`proteinpaint`](https://github.com/stjude/proteinpaint), a genomics visualisation tool.
-- [Coral Protocol](https://www.coralprotocol.org/) - Using Rig extensively, both internally as well as part of the [Coral Rust SDK.](https://github.com/Coral-Protocol/coral-rs)
-- [VT Code](https://github.com/vinhnx/vtcode) - VT Code is a Rust-based terminal coding agent with semantic code intelligence via Tree-sitter and ast-grep. VT Code uses `rig` for simplifying LLM calls and implement model picker.
-- [Dria](https://dria.co/) - a decentralised AI network. Currently using Rig as part of their [compute node.](https://github.com/firstbatchxyz/dkn-compute-node)
-- [Nethermind](https://www.nethermind.io/) - Using Rig as part of their [Neural Interconnected Nodes Engine](https://github.com/NethermindEth/nine) framework.
-- [Neon](https://neon.com) - Using Rig for their [app.build](https://github.com/neondatabase/appdotbuild-agent) V2 reboot in Rust.
-- [Listen](https://github.com/piotrostr/listen) - A framework aiming to become the go-to framework for AI portfolio management agents. Powers [the Listen app.](https://app.listen-rs.com/)
-- [Cairnify](https://cairnify.com/) - helps users find documents, links, and information instantly through an intelligent search bar. Rig provides the agentic foundation behind Cairnify’s AI search experience, enabling tool-calling, reasoning, and retrieval workflows.
-- [Ironclaw](https://github.com/nearai/ironclaw) - A secure personal AI assistant
+文件：`src/json_utils.rs`
 
-Are you also using Rig in production? [Open an issue](https://www.github.com/0xPlaygrounds/rig/issues) to have your name added!
+百炼要求 `function.arguments` 必须是 JSON 对象。官方把 `Null` 序列化成 `"null"`，历史里已存的脏数据回放会 400。直连百炼：`"null"` → 400；`""` / `"{}"` → 200。
+
+```rust
+let s = match value {
+    serde_json::Value::Null => "{}".to_string(),
+    other => other.to_string(),
+};
+serializer.serialize_str(&s)
+```
+
+测例：`test_stringified_json_serialize_null_as_empty_object`。
+
+anthropic 一线不用改，官方已有 `src/providers/anthropic/completion.rs` 的 `coerce_tool_input`。这层曾在一次升版本时丢过，升级时确认还在。
+
+---
+
+## 2. 流式 `delta.images` → `Unknown`，不进 assistant 历史
+
+OpenRouter 风格生成图放在 delta 同级 `images`。官方流式不认这个字段，serde 丢掉。本补丁收进来，交给 Termini 画图，不写进对话历史。
+
+| 文件 | 改什么 |
+| --- | --- |
+| `src/providers/openai/completion/streaming.rs` | `StreamingDelta.images`，`CompatibleChoiceData` 带上 |
+| `src/providers/internal/openai_chat_completions_compatible.rs` | `CompatibleChoice` / `CompatibleChoiceData` 加字段，`From` 透传，`emit_chunk` 之后 `Unknown` |
+| `src/test_utils/internal_streaming_profiles.rs` | 字面量补 `images: Vec::new()` |
+
+0.42 没有 `null_or_vec`，用旁边字段同一套 `null_or_default`。`Unknown` 要 `.into()` 成 `UnknownPayload`。0.42 copilot 不再拼 `CompatibleChoiceData`，不用改 copilot。
+
+```rust
+#[serde(default, deserialize_with = "json_utils::null_or_default")]
+images: Vec<serde_json::Value>,
+```
+
+```rust
+for image in choice.images {
+    out.push(Ok(RawStreamingChoice::Unknown(image.into())));
+}
+```
+
+`Unknown` 不折进累积的 assistant 消息。OpenRouter 也不接受把生成图当 assistant 内容回传。
+
+Termini 消费：`StreamedAssistantContent::Unknown`，用 `.value()` 读，`handle_image.rs` 解析 `image_url.url`。没有 `image_url` 的 Unknown 忽略。
+
+---
+
+## 3. `rustls` feature：`reqwest/rustls-no-provider`
+
+文件：`Cargo.toml`（cargo 用这个，不是 `Cargo.toml.orig`）
+
+官方：
+
+```toml
+rustls = [
+    "reqwest/rustls",
+    "tokio-tungstenite?/rustls-tls-webpki-roots",
+]
+```
+
+本地：
+
+```toml
+rustls = [
+    "reqwest/rustls-no-provider",
+    "tokio-tungstenite?/rustls-tls-webpki-roots",
+]
+```
+
+Termini 的 `ProvideFactory` 自建 rustls + ring，再 `tls_backend_preconfigured` 塞进客户端。官方 `reqwest/rustls` 自带 crypto provider，接不上。
+
+---
+
+## 不在本仓库
+
+诊断 tool call 空参数 `Null` → `{}`：`name_delta_diagnostic_tool_call`，0.42 在 **rig-agent** `src/agent/run/streamed.rs`。Skip / Retry 回放进历史。配套测例也在 rig-agent：`streamed_invalid_name_delta_without_args_records_object_arguments`、`streamed_invalid_name_delta_unparseable_args_normalize_to_object`。
+
+`.cargo_vcs_info.json`、`Cargo.toml.orig` 是 crates.io 包装文件，不是补丁。`Cargo.lock` 不是补丁。
