@@ -68,7 +68,7 @@ reqwest-middleware-rustls = [
 ]
 rmcp = ["dep:rmcp"]
 rustls = [
-    "reqwest/rustls",
+    "reqwest/rustls-no-provider",
     "tokio-tungstenite?/rustls-tls-webpki-roots",
 ]
 socks = ["reqwest/socks"]
