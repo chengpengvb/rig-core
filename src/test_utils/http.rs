@@ -1,6 +1,7 @@
 //! HTTP client doubles for provider tests.
 
 use std::{
+    collections::VecDeque,
     future::{self, Future},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -35,6 +36,12 @@ pub enum MockHttpResponse {
     /// Return an HTTP response with the given (typically non-success) status
     /// and body, instead of a transport-level error.
     ErrorResponse(http::StatusCode, Bytes),
+    /// Return a status-code error that preserved the failed response's
+    /// headers, exactly as the bundled reqwest transport does (rig#2210).
+    ErrorWithHeaders(http::StatusCode, String, Box<http::HeaderMap>),
+    /// Return an HTTP response with the given (typically non-success) status,
+    /// body, and response headers, instead of a transport-level error.
+    ErrorResponseWithHeaders(http::StatusCode, Bytes, Box<http::HeaderMap>),
 }
 
 impl MockHttpResponse {
@@ -44,8 +51,22 @@ impl MockHttpResponse {
     }
 
     /// Create an error response with a status code and message.
+    ///
+    /// Models a transport that reports a non-success status *without*
+    /// preserving the response headers (a custom [`HttpClientExt`]); use
+    /// [`Self::error_with_headers`] for the bundled reqwest behavior.
     pub fn error(status: http::StatusCode, message: impl Into<String>) -> Self {
         Self::Error(status, message.into())
+    }
+
+    /// Create a transport-level status error that preserved the failed
+    /// response's headers, as the bundled reqwest transport does.
+    pub fn error_with_headers(
+        status: http::StatusCode,
+        message: impl Into<String>,
+        headers: http::HeaderMap,
+    ) -> Self {
+        Self::ErrorWithHeaders(status, message.into(), Box::new(headers))
     }
 }
 
@@ -92,6 +113,39 @@ impl RecordingHttpClient {
         }
     }
 
+    /// Create a client whose transport reports a non-success status *and*
+    /// preserves the failed response's headers, as the bundled reqwest client
+    /// does (rig#2210).
+    pub fn with_error_headers(
+        status: http::StatusCode,
+        message: impl Into<String>,
+        headers: http::HeaderMap,
+    ) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            response: Arc::new(Mutex::new(MockHttpResponse::error_with_headers(
+                status, message, headers,
+            ))),
+        }
+    }
+
+    /// Create a client that hands back a non-success HTTP response carrying
+    /// `headers`, instead of a transport-level error.
+    pub fn with_error_response_headers(
+        status: http::StatusCode,
+        body: impl Into<Bytes>,
+        headers: http::HeaderMap,
+    ) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            response: Arc::new(Mutex::new(MockHttpResponse::ErrorResponseWithHeaders(
+                status,
+                body.into(),
+                Box::new(headers),
+            ))),
+        }
+    }
+
     /// Return the requests captured so far.
     pub fn requests(&self) -> Vec<CapturedHttpRequest> {
         self.requests_guard().clone()
@@ -127,20 +181,33 @@ impl RecordingHttpClient {
     where
         U: From<Bytes> + WasmCompatSend + 'static,
     {
-        let (status, response_body) = match response {
-            MockHttpResponse::Success(response_body) => (http::StatusCode::OK, response_body),
+        let (status, response_body, response_headers) = match response {
+            MockHttpResponse::Success(response_body) => (http::StatusCode::OK, response_body, None),
             MockHttpResponse::Error(status, message) => {
                 return Err(http_client::Error::InvalidStatusCodeWithMessage(
                     status, message,
                 ));
             }
-            MockHttpResponse::ErrorResponse(status, response_body) => (status, response_body),
+            MockHttpResponse::ErrorWithHeaders(status, body, headers) => {
+                return Err(http_client::Error::InvalidStatusCodeWithDetails {
+                    status,
+                    body,
+                    headers,
+                });
+            }
+            MockHttpResponse::ErrorResponse(status, response_body) => (status, response_body, None),
+            MockHttpResponse::ErrorResponseWithHeaders(status, response_body, headers) => {
+                (status, response_body, Some(headers))
+            }
         };
         let body: LazyBody<U> = Box::pin(async move { Ok(U::from(response_body)) });
-        Response::builder()
-            .status(status)
-            .body(body)
-            .map_err(http_client::Error::Protocol)
+        let mut builder = Response::builder().status(status);
+        if let Some(headers) = response_headers
+            && let Some(slot) = builder.headers_mut()
+        {
+            *slot = *headers;
+        }
+        builder.body(body).map_err(http_client::Error::Protocol)
     }
 }
 
@@ -168,10 +235,120 @@ impl HttpClientExt for RecordingHttpClient {
         U: From<Bytes> + WasmCompatSend + 'static,
     {
         let response = self.response_guard().clone();
+        let (parts, body) = req.into_parts();
+        let (_, body) = body.boundary("recording-http-client").encode();
+        self.record_request(parts.uri.to_string(), parts.headers, body);
+
+        async move { Self::build_unary_response(response) }
+    }
+
+    fn send_streaming<T>(
+        &self,
+        _req: Request<T>,
+    ) -> impl Future<Output = http_client::Result<StreamingResponse>> + WasmCompatSend
+    where
+        T: Into<Bytes> + WasmCompatSend,
+    {
+        future::ready(Err(http_client::Error::InvalidStatusCode(
+            http::StatusCode::NOT_IMPLEMENTED,
+        )))
+    }
+}
+
+/// An [`HttpClientExt`] implementation that records unary requests and returns
+/// one scripted response per request.
+///
+/// This is useful for testing retry and recovery paths through real provider
+/// request/response conversion without live credentials.
+#[derive(Clone, Debug, Default)]
+pub struct SequencedHttpClient {
+    requests: Arc<Mutex<Vec<CapturedHttpRequest>>>,
+    responses: Arc<Mutex<VecDeque<MockHttpResponse>>>,
+}
+
+impl SequencedHttpClient {
+    /// Create a client that returns the supplied responses in order.
+    pub fn new(responses: impl IntoIterator<Item = MockHttpResponse>) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+        }
+    }
+
+    /// Return the requests captured so far.
+    pub fn requests(&self) -> Vec<CapturedHttpRequest> {
+        match self.requests.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Return the number of scripted responses that have not been consumed.
+    pub fn remaining_responses(&self) -> usize {
+        match self.responses.lock() {
+            Ok(guard) => guard.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        }
+    }
+
+    fn record_request(&self, uri: String, headers: http::HeaderMap, body: Bytes) {
+        let request = CapturedHttpRequest { uri, headers, body };
+        match self.requests.lock() {
+            Ok(mut guard) => guard.push(request),
+            Err(poisoned) => poisoned.into_inner().push(request),
+        }
+    }
+
+    fn next_response(&self) -> Option<MockHttpResponse> {
+        match self.responses.lock() {
+            Ok(mut guard) => guard.pop_front(),
+            Err(poisoned) => poisoned.into_inner().pop_front(),
+        }
+    }
+}
+
+impl HttpClientExt for SequencedHttpClient {
+    fn send<T, U>(
+        &self,
+        req: Request<T>,
+    ) -> impl Future<Output = http_client::Result<Response<LazyBody<U>>>> + WasmCompatSend + 'static
+    where
+        T: Into<Bytes> + WasmCompatSend,
+        U: From<Bytes> + WasmCompatSend + 'static,
+    {
+        let response = self.next_response();
+        let (parts, body) = req.into_parts();
+        self.record_request(parts.uri.to_string(), parts.headers, body.into());
+
+        async move {
+            match response {
+                Some(response) => RecordingHttpClient::build_unary_response(response),
+                None => Err(http_client::Error::InvalidStatusCode(
+                    http::StatusCode::NOT_IMPLEMENTED,
+                )),
+            }
+        }
+    }
+
+    fn send_multipart<U>(
+        &self,
+        req: Request<MultipartForm>,
+    ) -> impl Future<Output = http_client::Result<Response<LazyBody<U>>>> + WasmCompatSend + 'static
+    where
+        U: From<Bytes> + WasmCompatSend + 'static,
+    {
+        let response = self.next_response();
         let (parts, _body) = req.into_parts();
         self.record_request(parts.uri.to_string(), parts.headers, Bytes::new());
 
-        async move { Self::build_unary_response(response) }
+        async move {
+            match response {
+                Some(response) => RecordingHttpClient::build_unary_response(response),
+                None => Err(http_client::Error::InvalidStatusCode(
+                    http::StatusCode::NOT_IMPLEMENTED,
+                )),
+            }
+        }
     }
 
     fn send_streaming<T>(
